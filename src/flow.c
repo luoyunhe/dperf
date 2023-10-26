@@ -173,26 +173,52 @@ static int flow_new(uint8_t port_id, uint16_t rxq, ipaddr_t sip, ipaddr_t dip, b
     return flow_create(port_id, pattern, action);
 }
 
+struct rte_ring *redirect_ring[64][64];
+uint16_t index_to_queue_map[256];
+uint16_t queue_to_index_map[64];
+int total_queue_num;
+#define REDIRECT_RING_SIZE  4096
+
 static int flow_init_port(struct netif_port *port, bool server, bool ipv6)
 {
+    char name_buf[RTE_RING_NAMESIZE];
+
     int ret = 0;
     int queue_id = 0;
+    int peer_queue_id = 0;
     ipaddr_t server_ip;
     ipaddr_t client_ip;
+    uint32_t index = 0;
+
+    int socket_id = rte_socket_id();
+    total_queue_num = port->queue_num;
 
     memset(&client_ip, 0, sizeof(ipaddr_t));
-    rte_flow_flush(port->id, NULL);
+    // rte_flow_flush(port->id, NULL);
     for (queue_id = 0; queue_id < port->queue_num; queue_id++) {
         ip_range_get2(&port->server_ip_range, queue_id, &server_ip);
-
-        if (server) {
-            ret = flow_new(port->id, queue_id, client_ip, server_ip, ipv6);
-        } else {
-            ret = flow_new(port->id, queue_id, server_ip, client_ip, ipv6);
-        }
-
-        if (ret < 0) {
-            return -1;
+        index = server_ip.ip >> 24;
+        // if (server) {
+            // ret = flow_new(port->id, queue_id, client_ip, server_ip, ipv6);
+        // } else {
+            // ret = flow_new(port->id, queue_id, server_ip, client_ip, ipv6);
+        // }
+        // if (ret < 0) {
+        //     return -1;
+        // }
+        index_to_queue_map[index] = queue_id;
+        queue_to_index_map[queue_id] = index;
+        for (peer_queue_id = 0; peer_queue_id < port->queue_num; peer_queue_id++) {
+            if (peer_queue_id == queue_id) {
+                continue;
+            }
+            snprintf(name_buf, RTE_RING_NAMESIZE,
+                "redirect_ring[%d][%d]", queue_id, peer_queue_id);
+            redirect_ring[queue_id][peer_queue_id] =
+                rte_ring_create(name_buf, REDIRECT_RING_SIZE, socket_id, RING_F_SP_ENQ | RING_F_SC_DEQ);
+            if (redirect_ring[queue_id][peer_queue_id] == NULL) {
+                return -1;
+            }
         }
     }
     return 0;

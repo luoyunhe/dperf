@@ -28,6 +28,7 @@
 #include "kni.h"
 #include "socket_timer.h"
 #include <rte_ip_frag.h>
+#include <stdint.h>
 
 /* optimal value, don't change */
 #define MBUF_PREFETCH_NUM 4
@@ -224,18 +225,27 @@ static inline int slow_timer_run(struct work_space *ws)
     return 0;
 }
 
+extern struct rte_ring *redirect_ring[64][64];
+extern uint16_t index_to_queue_map[256];
+extern uint16_t queue_to_index_map[64];
+extern int total_queue_num;
+
 static inline int client_recv_mbuf(struct work_space *ws, l3_input_t l3_input,
     l4_input_t tcp_input, l4_input_t udp_input, work_space_process_t client_launch)
 {
     int i = 0;
     int j = MBUF_PREFETCH_NUM;
+    int k = 0;
     int nb_rx = 0;
     struct rte_mbuf **mbuf_rx = ws->mbuf_rx;
     uint16_t port = ws->port_id;
     uint16_t queue = ws->queue_id;
+    int return_code = 0;
+    int recv_cnt = 0;
 
     nb_rx = rte_eth_rx_burst(port, queue, mbuf_rx, RX_BURST_MAX);
     if (nb_rx) {
+        return_code = 1;
         if (nb_rx > MBUF_PREFETCH_NUM) {
             for (i = 0; i < MBUF_PREFETCH_NUM; i++) {
                 mbuf_prefetch(mbuf_rx[i]);
@@ -243,7 +253,20 @@ static inline int client_recv_mbuf(struct work_space *ws, l3_input_t l3_input,
         }
 
         for (i = 0; i < nb_rx; i++, j++) {
-            l3_input(ws, mbuf_rx[i], tcp_input, udp_input);
+            recv_cnt++;
+            struct eth_hdr *eth = mbuf_eth_hdr(mbuf_rx[i]);
+            if (likely(eth->type == htons(ETHER_TYPE_IPv4))) {
+                struct iphdr *iph = mbuf_ip_hdr(mbuf_rx[i]);
+                uint32_t index = iph->saddr >> 24;
+                int target_queue = index_to_queue_map[index];
+                if (target_queue != queue) {
+                    rte_ring_enqueue(redirect_ring[queue][target_queue], (void *)mbuf_rx[i]);
+                } else {
+                    l3_input(ws, mbuf_rx[i], tcp_input, udp_input);
+                }
+            } else {
+                l3_input(ws, mbuf_rx[i], tcp_input, udp_input);
+            }
             if (j < nb_rx) {
                 mbuf_prefetch(mbuf_rx[j]);
             }
@@ -251,14 +274,45 @@ static inline int client_recv_mbuf(struct work_space *ws, l3_input_t l3_input,
              * Launch connections as evenly as possible
              * Since we have processed a lot of packets, now we launch new connections.
              * */
-            if (i % 64 == 0) {
+            if (recv_cnt % 64 == 0) {
                 tick_time_update(&ws->time);
                 client_launch(ws);
             }
         }
-        return 1;
     }
-    return 0;
+
+    for (k = 0; k < total_queue_num; k++) {
+        if (k == queue) {
+            continue;
+        }
+        nb_rx = rte_ring_dequeue_burst(redirect_ring[k][queue], (void **)mbuf_rx, RX_BURST_MAX, NULL);
+        if (nb_rx) {
+            return_code = 1;
+            if (nb_rx > MBUF_PREFETCH_NUM) {
+                for (i = 0; i < MBUF_PREFETCH_NUM; i++) {
+                    mbuf_prefetch(mbuf_rx[i]);
+                }
+            }
+            
+            for (i = 0; i < nb_rx; i++, j++) {
+                recv_cnt++;
+                l3_input(ws, mbuf_rx[i], tcp_input, udp_input);
+                if (j < nb_rx) {
+                    mbuf_prefetch(mbuf_rx[j]);
+                }
+                /*
+                * Launch connections as evenly as possible
+                * Since we have processed a lot of packets, now we launch new connections.
+                * */
+                if (recv_cnt % 64 == 0) {
+                    tick_time_update(&ws->time);
+                    client_launch(ws);
+                }
+            }
+
+        }
+    }
+    return return_code;
 }
 
 static inline int server_recv_mbuf(struct work_space *ws, l3_input_t l3_input,
@@ -266,13 +320,16 @@ static inline int server_recv_mbuf(struct work_space *ws, l3_input_t l3_input,
 {
     int i = 0;
     int j = MBUF_PREFETCH_NUM;
+    int k = 0;
     int nb_rx = 0;
     struct rte_mbuf **mbuf_rx = ws->mbuf_rx;
     uint16_t port = ws->port_id;
     uint16_t queue = ws->queue_id;
+    int return_code = 0;
 
     nb_rx = rte_eth_rx_burst(port, queue, mbuf_rx, RX_BURST_MAX);
     if (nb_rx) {
+        return_code = 1;
         if (nb_rx > MBUF_PREFETCH_NUM) {
             for (i = 0; i < MBUF_PREFETCH_NUM; i++) {
                 mbuf_prefetch(mbuf_rx[i]);
@@ -280,14 +337,47 @@ static inline int server_recv_mbuf(struct work_space *ws, l3_input_t l3_input,
         }
 
         for (i = 0; i < nb_rx; i++, j++) {
-            l3_input(ws, mbuf_rx[i], tcp_input, udp_input);
+            struct eth_hdr *eth = mbuf_eth_hdr(mbuf_rx[i]);
+            if (likely(eth->type == htons(ETHER_TYPE_IPv4))) {
+                struct iphdr *iph = mbuf_ip_hdr(mbuf_rx[i]);
+                uint32_t index = iph->daddr >> 24;
+                int target_queue = index_to_queue_map[index];
+                if (target_queue != queue) {
+                    rte_ring_enqueue(redirect_ring[queue][target_queue], (void *)mbuf_rx[i]);
+                } else {
+                    l3_input(ws, mbuf_rx[i], tcp_input, udp_input);
+                }
+            } else {
+                l3_input(ws, mbuf_rx[i], tcp_input, udp_input);
+            }
             if (j < nb_rx) {
                 mbuf_prefetch(mbuf_rx[j]);
             }
         }
-        return 1;
     }
-    return 0;
+
+    for (k = 0; k < total_queue_num; k++) {
+        if (k == queue) {
+            continue;
+        }
+        nb_rx = rte_ring_dequeue_burst(redirect_ring[k][queue], (void **)mbuf_rx, RX_BURST_MAX, NULL);
+        if (nb_rx) {
+            return_code = 1;
+            if (nb_rx > MBUF_PREFETCH_NUM) {
+                for (i = 0; i < MBUF_PREFETCH_NUM; i++) {
+                    mbuf_prefetch(mbuf_rx[i]);
+                }
+            }
+
+            for (i = 0; i < nb_rx; i++, j++) {
+                l3_input(ws, mbuf_rx[i], tcp_input, udp_input);
+                if (j < nb_rx) {
+                    mbuf_prefetch(mbuf_rx[j]);
+                }
+            }
+        }
+    }
+    return return_code;
 }
 
 static inline void server_loop(struct work_space *ws, l3_input_t l3_input,
