@@ -171,7 +171,10 @@ int port_config(struct netif_port *port)
         printf("bad queue_num %d max rx %d max tx %d\n", queue_num, dev_info.max_rx_queues, dev_info.max_tx_queues);
         return -1;
     }
-
+    g_port_conf.rxmode.mtu = 1400;
+    if (g_config.mss > 1400) {
+        g_port_conf.rxmode.mtu = g_config.mss + 40;
+    }
     if (rte_eth_dev_configure(port_id, queue_num, queue_num, &g_port_conf) < 0) {
         printf("dev configure fail\n");
         return -1;
