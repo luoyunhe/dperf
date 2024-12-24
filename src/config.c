@@ -20,6 +20,8 @@
 
 #include "config.h"
 
+#include <stdbool.h>
+#include <stddef.h>
 #include <stdio.h>
 #include <getopt.h>
 #include <dirent.h>
@@ -554,6 +556,8 @@ static int config_parse_port(int argc, char *argv[], void *data)
     struct netif_port *port = NULL;
     struct config *cfg = data;
 
+    const char * virtio_user_prefix = "--vdev=";
+
     if ((argc < 4) || (argc > 5)) {
         return -1;
     }
@@ -567,6 +571,16 @@ static int config_parse_port(int argc, char *argv[], void *data)
             printf("bad bond \"%s\"\n", argv[1]);
             return -1;
         }
+    } else if (!strncmp(argv[1], virtio_user_prefix, strlen(virtio_user_prefix)-1)) {
+        strcpy(port->virtio_user_arg, argv[1]);
+        port->virtio_user = true;
+        port->pci_num = 1;
+        char* vdev_start = argv[1] +  strlen("--vdev=");
+        char* vdev_end = strchr(vdev_start, ',');
+        size_t len = vdev_end - vdev_start;
+        strncpy(port->pci, vdev_start, len);
+        port->pci[len] = '\0';
+
     } else if (strlen(argv[1]) == PCI_LEN) {
         strcpy(port->pci, argv[1]);
         port->pci_num = 1;

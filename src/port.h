@@ -32,7 +32,7 @@
 #include "vxlan.h"
 
 #define THREAD_NUM_MAX      64
-#define NETIF_PORT_MAX      4
+#define NETIF_PORT_MAX      10
 #define PCI_LEN             12
 
 #define NB_RXD              4096
@@ -79,11 +79,13 @@ struct netif_port {
     uint8_t bond_policy;
     uint8_t pci_num;
     char bond_name[BOND_NAME_MAX];
+    bool virtio_user;
 
     union {
         char pci[PCI_LEN + 1];
         char pci_list[PCI_NUM_MAX][PCI_LEN + 1];
     };
+    char virtio_user_arg[256];
 
     uint16_t port_id_list[PCI_NUM_MAX];
 };

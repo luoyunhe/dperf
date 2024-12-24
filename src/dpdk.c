@@ -63,6 +63,12 @@ static int dpdk_append_pci(struct config *cfg, int argc, char *argv[], char *fla
 
     config_for_each_port(cfg, port) {
         for (i = 0; i < port->pci_num; i++) {
+            if (port->virtio_user) {
+                argv[argc] = port->virtio_user_arg;
+                argc++;
+                num++;
+                continue;
+            }
             argv[argc] = flag_pci;
             argv[argc+1] = port->pci_list[i];
             argc += 2;
@@ -120,7 +126,7 @@ static int dpdk_eal_init(struct config *cfg, char *argv0)
 #endif
     char socket_mem[64] = "";
     char file_prefix[64] = "";
-    char *argv[6 + (NETIF_PORT_MAX * PCI_NUM_MAX* 2)] = {argv0, lcores, socket_mem,
+    char *argv[6 + (NETIF_PORT_MAX * PCI_NUM_MAX* 2)+10] = {argv0, lcores, socket_mem,
             file_prefix, log_level, NULL, NULL};
 
 #if RTE_VERSION >= RTE_VERSION_NUM(20, 0, 0, 0)
@@ -138,6 +144,14 @@ static int dpdk_eal_init(struct config *cfg, char *argv0)
     argc += dpdk_append_pci(cfg, argc, argv, flag_pci);
 
     dpdk_set_simd_bitwidth(cfg);
+    for (int i = 0; i < argc; i++) {
+        printf("%s\n", argv[i]);
+    }
+    argv[argc] = "--single-file-segments";
+    argc++;
+    argv[argc] = "--in-memory";
+    argc++;
+
     if (rte_eal_init(argc, argv) < 0) {
         printf("rte_eal_init fail\n");
         return -1;
